@@ -4,14 +4,14 @@ from __future__ import division
 import warnings
 import tensorflow as tf
 
-from backend import backend as K
-from backend import activations
-from backend import initializers
-from backend import regularizers
-from backend import constraints
-from backend import Layer
-from backend import InputSpec
-from backend import losses
+from .backend import backend as K
+from .backend import activations
+from .backend import initializers
+from .backend import regularizers
+from .backend import constraints
+from .backend import Layer
+from .backend import InputSpec
+from .backend import losses
 
 
 class CRF(Layer):
