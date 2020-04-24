@@ -4,7 +4,7 @@ from crf import CRF
 import os
 
 if __name__ == '__main__':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '6'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     
     gpus = tf.config.experimental.list_physical_devices(device_type='GPU')
     for gpu in gpus:

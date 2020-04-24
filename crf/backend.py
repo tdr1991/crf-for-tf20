@@ -1,13 +1,8 @@
-import tensorflow as tf
-
-keras = tf.keras
-backend = keras.backend
-activations = keras.activations
-initializers = keras.initializers
-regularizers = keras.regularizers
-constraints = keras.constraints
-losses = keras.losses
-metrics = keras.metrics
-Layer = keras.layers.Layer
-InputSpec = keras.layers.InputSpec
-
+from tensorflow.python.keras import backend
+from tensorflow.python.keras import activations
+from tensorflow.python.keras import initializers
+from tensorflow.python.keras import regularizers
+from tensorflow.python.keras import constraints
+from tensorflow.python.keras import losses
+from tensorflow.python.keras import metrics
+from tensorflow.python.keras.layers import Layer, InputSpec

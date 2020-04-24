@@ -13,7 +13,6 @@ from .backend import Layer
 from .backend import InputSpec
 from .backend import losses
 
-
 class CRF(Layer):
     """An implementation of linear chain conditional random field (CRF).
     An linear chain CRF is defined to maximize the following likelihood function:
@@ -49,59 +48,22 @@ class CRF(Layer):
     add 'cc @lzfelix' to notify Luiz Felix.
     # Examples
     ```python
-        from keras_contrib.layers import CRF
-        from keras_contrib.losses import crf_loss
-        from keras_contrib.metrics import crf_viterbi_accuracy
+        from crf import CRF
         model = Sequential()
         model.add(Embedding(3001, 300, mask_zero=True)(X)
-        # use learn_mode = 'join', test_mode = 'viterbi',
         # sparse_target = True (label indice output)
         crf = CRF(10, sparse_target=True)
         model.add(crf)
-        # crf_accuracy is default to Viterbi acc if using join-mode (default).
-        # One can add crf.marginal_acc if interested, but may slow down learning
-        model.compile('adam', loss=crf_loss, metrics=[crf_viterbi_accuracy])
+        model.compile('adam', loss=crf.loss, metrics=[crf.accuracy])
         # y must be label indices (with shape 1 at dim 3) here,
         # since `sparse_target=True`
         model.fit(x, y)
         # prediction give onehot representation of Viterbi best path
-        y_hat = model.predict(x_test)
-    ```
-    The following snippet shows how to load a persisted
-    model that uses the CRF layer:
-    ```python
-        from keras.models import load_model
-        from keras_contrib.losses import import crf_loss
-        from keras_contrib.metrics import crf_viterbi_accuracy
-        custom_objects={'CRF': CRF,
-                        'crf_loss': crf_loss,
-                        'crf_viterbi_accuracy': crf_viterbi_accuracy}
-        loaded_model = load_model('<path_to_model>',
-                                  custom_objects=custom_objects)
+        logits = model(x_test)
+        y_hat = crf.decode(logits)
     ```
     # Arguments
         units: Positive integer, dimensionality of the output space.
-        lr_multiplier: Learning rate multiplier, to speed up crf weights updating.
-        learn_mode: Either 'join' or 'marginal'.
-            The former train the model by maximizing join likelihood while the latter
-            maximize the product of marginal likelihood over all time steps.
-            One should use `losses.crf_nll` for 'join' mode
-            and `losses.categorical_crossentropy` or
-            `losses.sparse_categorical_crossentropy` for
-            `marginal` mode.  For convenience, simply
-            use `losses.crf_loss`, which will decide the proper loss as described.
-        test_mode: Either 'viterbi' or 'marginal'.
-            The former is recommended and as default when `learn_mode = 'join'` and
-            gives one-hot representation of the best path at test (prediction) time,
-            while the latter is recommended and chosen as default
-            when `learn_mode = 'marginal'`,
-            which produces marginal probabilities for each time step.
-            For evaluating metrics, one should
-            use `metrics.crf_viterbi_accuracy` for 'viterbi' mode and
-            'metrics.crf_marginal_accuracy' for 'marginal' mode, or
-            simply use `metrics.crf_accuracy` for
-            both which automatically decides it as described.
-            One can also use both for evaluation at training.
         sparse_target: Boolean (default False) indicating
             if provided labels are one-hot or
             indices (with shape 1 at dim 3).
@@ -167,9 +129,6 @@ class CRF(Layer):
     """
 
     def __init__(self, units,
-                 lr_multiplier=1.0,
-                 learn_mode='join',
-                 test_mode=None,
                  sparse_target=False,
                  use_boundary=True,
                  use_bias=True,
@@ -192,14 +151,6 @@ class CRF(Layer):
         super(CRF, self).__init__(**kwargs)
         self.supports_masking = True
         self.units = units
-        self.lr_multiplier = lr_multiplier
-        self.learn_mode = learn_mode
-        assert self.learn_mode in ['join', 'marginal']
-        self.test_mode = test_mode
-        if self.test_mode is None:
-            self.test_mode = 'viterbi' if self.learn_mode == 'join' else 'marginal'
-        else:
-            assert self.test_mode in ['viterbi', 'marginal']
         self.sparse_target = sparse_target
         self.use_boundary = use_boundary
         self.use_bias = use_bias
@@ -259,34 +210,23 @@ class CRF(Layer):
                                                   regularizer=self.boundary_regularizer,
                                                   constraint=self.boundary_constraint)
 
-        if self.lr_multiplier != 1:
-            K.set_value(self.chain_kernel, self.chain_kernel / self.lr_multiplier)
-            self.chain_kernel = self.lr_multiplier * self.chain_kernel
-
         self.built = True
 
-    def call(self, X, mask=None, training=False):
+    def call(self, inputs, mask=None):
         if mask is not None:
             assert K.ndim(mask) == 2, 'Input mask to CRF must have dim 2 if not None'
         
-        input_energy = self.activation(K.dot(X, self.kernel) + self.bias)
+        input_energy = self.activation(K.dot(inputs, self.kernel) + self.bias)
+        mask = tf.expand_dims(tf.cast(mask, dtype=input_energy.dtype), -1)
+        input_energy *= mask
         
-        if self.test_mode == 'viterbi':
-            test_output = self.viterbi_decoding(input_energy, mask)
-        else:
-            test_output = self.get_marginal_prob(input_energy, mask)
+        return input_energy
 
-        self.uses_learning_phase = True
-        if self.learn_mode == 'join':
-            train_output = tf.cast(tf.expand_dims(mask, -1), input_energy.dtype) * input_energy
-            out = K.in_train_phase(train_output, test_output, training=training)
-        else:
-            if self.test_mode == 'viterbi':
-                train_output = self.get_marginal_prob(input_energy, mask)
-                out = K.in_train_phase(train_output, test_output, training=training)
-            else:
-                out = test_output
-        return out
+    @tf.function
+    def decode(self, input_energy):
+        mask = tf.reduce_any(tf.not_equal(input_energy, 0), -1)
+        output = self.viterbi_decoding(input_energy, mask)
+        return tf.argmax(output, -1)
 
     def compute_output_shape(self, input_shape): 
         return input_shape[:2] + (self.units,)
@@ -297,8 +237,6 @@ class CRF(Layer):
     def get_config(self):
         config = {
             'units': self.units,
-            'learn_mode': self.learn_mode,
-            'test_mode': self.test_mode,
             'use_boundary': self.use_boundary,
             'use_bias': self.use_bias,
             'sparse_target': self.sparse_target,
@@ -324,58 +262,31 @@ class CRF(Layer):
 
     @property
     def loss(self):
-        def crf_nll(y_true, y_pred):
+        def crf_loss(y_true, y_pred):
             if self._outbound_nodes:
-                raise TypeError('When learn_model="join", CRF must be the last layer.')
+                raise TypeError('CRF must be the last layer.')
             if self.sparse_target:
                 y_true = K.one_hot(K.cast(y_true[:, :, 0], 'int32'), self.units)
-            mask = K.any(K.not_equal(y_pred, 0), -1)
-            nloglik = self.get_negative_log_likelihood(y_true, y_pred, mask)
+            input_energy = y_pred
+            mask = tf.reduce_any(tf.not_equal(input_energy, 0), -1)
+            
+            nloglik = self.get_negative_log_likelihood(y_true, input_energy, mask)
             
             return nloglik
-
-        def crf_loss(y_true, y_pred):
-            if self.learn_mode == 'join':
-                return crf_nll(y_true, y_pred)
-            else:
-                if self.sparse_target:
-                    return losses.sparse_categorical_crossentropy(y_true, y_pred)
-                else:
-                    return losses.categorical_crossentropy(y_true, y_pred)
-
         return crf_loss
 
     @property
     def accuracy(self):
-        def crf_viterbi_accuracy(y_true, y_pred):
+        def crf_accuracy(y_true, y_pred):
             '''Use Viterbi algorithm to get best path, and compute its accuracy.
             `y_pred` must be an output from CRF.'''
-            mask = K.any(K.not_equal(y_pred, 0), -1)
-            y_pred = self.viterbi_decoding(y_pred, mask)
+            input_energy = y_pred
+            mask = tf.reduce_any(tf.not_equal(input_energy, 0), -1)
+            y_pred = self.viterbi_decoding(input_energy, mask)
             return _get_accuracy(y_true, y_pred, mask, self.sparse_target)
-        
-        def crf_marginal_accuracy(y_true, y_pred):
-            '''Use time-wise marginal argmax as prediction.
-            `y_pred` must be an output from CRF with `learn_mode="marginal"`.'''
-            mask = K.any(K.not_equal(y_pred, 0), -1)
-            y_pred = self.get_marginal_prob(y_pred, mask)
-            return _get_accuracy(y_true, y_pred, mask, self.sparse_target)
-
-        def crf_accuracy(y_true, y_pred):
-            if self.test_mode == 'viterbi':
-                return crf_viterbi_accuracy(y_true, y_pred)
-            else:
-                return crf_marginal_accuracy(y_true, y_pred)
 
         crf_accuracy.__name__ = 'acc'
         return crf_accuracy
-
-    @staticmethod
-    def softmaxNd(x, axis=-1):
-        m = K.max(x, axis=axis, keepdims=True)
-        exp_x = K.exp(x - m)
-        prob_x = exp_x / K.sum(exp_x, axis=axis, keepdims=True)
-        return prob_x
 
     @staticmethod
     def shift_left(x, offset=1):
@@ -473,7 +384,7 @@ class CRF(Layer):
 
     def recursion(self, input_energy, mask=None, go_backwards=False,
                   return_sequences=True, return_logZ=True, input_length=None):
-        """Forward (alpha) or backward (beta) recursion
+        r"""Forward (alpha) or backward (beta) recursion
         If `return_logZ = True`, compute the logZ, the normalization constant:
         \[ Z = \sum_{y1, y2, y3} exp(-E) # energy
           = \sum_{y1, y2, y3} exp(-(u1' y1 + y1' W y2 + u2' y2 + y2' W y3 + u3' y3))
@@ -528,21 +439,6 @@ class CRF(Layer):
 
     def backward_recursion(self, input_energy, **kwargs):
         return self.recursion(input_energy, go_backwards=True, **kwargs)
-
-    def get_marginal_prob(self, input_energy, mask=None):
-        if self.use_boundary:
-            input_energy = self.add_boundary_energy(input_energy, mask,
-                                                    self.left_boundary,
-                                                    self.right_boundary)
-        input_length = K.int_shape(X)[1]
-        alpha = self.forward_recursion(input_energy, mask=mask,
-                                       input_length=input_length)
-        beta = self.backward_recursion(input_energy, mask=mask,
-                                       input_length=input_length)
-        if mask is not None:
-            input_energy = input_energy * K.expand_dims(K.cast(mask, K.floatx()))
-        margin = -(self.shift_right(alpha) + input_energy + self.shift_left(beta))
-        return self.softmaxNd(margin)
 
     def viterbi_decoding(self, input_energy, mask=None):
         if self.use_boundary:
